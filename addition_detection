@@ -2,6 +2,18 @@
 import re
 
 '''
+Regular expressions used to detect addition and its traits. They are all named
+after the string they are supposed to match, only "add" requires a bit of extra
+flexibility in case it is the first word in a sentence. The other regexes were
+treated differently since the corresponding words are not expected to be found
+at the start of a sentence (at least for the purposes of this exercise.)
+'''
+
+add = re.compile("[aA]dd")
+portion = re.compile("portion")
+flow = re.compile("flow")
+
+'''
 Regular expression used to separate each line by sentence. It does so by
 matching all characters (non-greedily thanks to the "?" after the "+") until it
 finds a period which is followed by whitespace. That way, it doesn't confuse
@@ -9,6 +21,7 @@ decimal points or abbreviations (such as 'r.t.') with actual full stops. It
 then groups the remaining string as "the_rest" so that it may be fed into the
 next iteration of the loop.
 '''
+
 non_full_stop = re.compile("(.+?(\.\s))(?P<the_rest>.*)")
 
 #Opening the file with the experiments, assuming it's in the same directory.
@@ -17,32 +30,73 @@ try:
 except IOError:
     print("The file couldn't be read.")
 
+#Counter which helps keep track of the additions.
+experiment_count = 0
+
 '''
-Loop where the detection occurs. At the moment, all it does is separate each
-line into sentences. The outer loop parses the file line by line, while the
-inner loop performs the separation. It starts by ensuring that the line ends
-in a newline character for regex matching purposes. Then, it tries to match
-the beginning of the string with the non_full_stop regular expression. If it
-does (which is to say, if the string ends in a period immediately followed by
-whitespace), then the match (i.e. the sentence) is printed and the remainder of
-the string (i.e. the non-matched part) is sent to the next iteration of the
-inner loop. If there is no match, the inner loop is exited and the next line is
-fed into the inner loop.
+Loop where the detection occurs. The outer loop parses the file line by line,
+while the inner handles the lines individually. It starts by ensuring that the
+line ends in a newline character for regex matching purposes, while also
+printing for formatting reasons and increasing the experiment counter. Then, it
+tries to match the beginning of the string with the non_full_stop regular
+expression. If it does (which is to say, if the string ends in a period
+immediately followed by whitespace), then an additional check is made to see if
+the sentence contains the string "add", while if it doesn't then the inner loop
+is exited and the next line is fed into the inner loop. If the string does
+contain "add", an addition has been detected and the parameters are
+searched for sequentially.
 '''
+
 for line in file_lines:
     #Print formatting, the condition ignores the file's blank lines.
     if line != "\n":
         print(line + "\n")
+        #Counter for formatting purposes, follows experiment number.
+        experiment_count += 1
+    
+    #Resets this counter for each experiment.
+    addition_count = 0
     
     while True:
         #Necessary condition to prevent the index from going out of bounds.
         if line:
             if line[-1] != "\n":
                 line += "\n"
+        
+        #Mathes the longest possible string before ". " or ".\n".
         sentence = non_full_stop.match(line)
         if sentence:
-            print(sentence.group(1).strip() + "\n")
+            #Reduces number of calls of .group() while cleaning up code a bit.
+            sentence_string = sentence.group(1)
+            
+            #Searches for the string "add" in the sentece.
+            addition_sentence = add.search(sentence_string)
+            if addition_sentence:
+                #Counter for formatting purposes.
+                addition_count += 1
+                
+                #Addition header.
+                print("Addition #" + str(experiment_count) +
+                      "." + str(addition_count))
+                
+                #Searches for addition traits.
+                portion_sentence = portion.search(sentence_string)
+                flow_sentence = flow.search(sentence_string)
+                
+                #Addition type.
+                if portion_sentence:
+                    print("Type: in portions")
+                elif flow_sentence:
+                    print("Type: continuous")
+                else:
+                    print("Type: missing")
+                
+                print(sentence_string.strip() + "\n")
+            
+            #Groups the rest of the string and passes it to the next iteration.
             line = sentence.group("the_rest")
+        
+        #If the line has been completely parsed or there is no "add", we exit.
         else:
             #Print formatting.
             print()
