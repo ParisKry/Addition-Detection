@@ -1,12 +1,35 @@
-#Import necessary for using regular expressions in Python
+'''
+Overview: this code goes through each one of the file's lines and separates
+them into sentences for easier handling. It then looks for addition in the
+sentences individually: if it detects the string "add", it subsequently
+registers an addition and goes on to detect its parameters.
+'''
+
+from chemdataextractor import Document
+
+#Import necessary for using regular expressions in Python.
 import re
 
 '''
-Regular expressions used to detect addition and its traits. They are all named
+Regular expression used to separate each line by sentence. It does so by
+matching all characters (non-greedily thanks to the "?" after the "+") until it
+finds a period which is followed by whitespace. That way, it doesn't confuse
+decimal points with actual full stops. It then groups the remaining string as
+"the_rest" so that it may be fed into the next iteration of the loop.
+'''
+
+non_full_stop = re.compile("(.+?(\.\s))(?P<the_rest>.*)")
+
+'''
+Regular expressions used to detect addition and its type. They are all named
 after the string they are supposed to match, only "add" requires a bit of extra
 flexibility in case it is the first word in a sentence. The other regexes were
 treated differently since the corresponding words are not expected to be found
-at the start of a sentence (at least for the purposes of this exercise.)
+at the start of a sentence (at least for the purposes of this exercise).
+Other words that could potentially be helpful to identify addition type in the
+file were "dropwise" and "syringe", but they weren't implemented both because I
+am not confident in how/if they relate and because the solution isn't supposed
+to be all-encompassing.
 '''
 
 add = re.compile("[aA]dd")
@@ -14,15 +37,93 @@ portion = re.compile("portion")
 flow = re.compile("flow")
 
 '''
-Regular expression used to separate each line by sentence. It does so by
-matching all characters (non-greedily thanks to the "?" after the "+") until it
-finds a period which is followed by whitespace. That way, it doesn't confuse
-decimal points or abbreviations (such as 'r.t.') with actual full stops. It
-then groups the remaining string as "the_rest" so that it may be fed into the
-next iteration of the loop.
+Regular expressions used to split a sentence into two strings: the string that
+comes before the instance of "add" and the one that follows it. The already
+defined regex "add" is not used here purely for formatting purposes.
 '''
 
-non_full_stop = re.compile("(.+?(\.\s))(?P<the_rest>.*)")
+lookahead = re.compile(".+(?=[aA]dd)")
+lookbehind = re.compile("(?<=[aA]dd).+")
+
+'''
+Regular expression used to ensure that strings which are investigated for
+constituents contain at least one digit or parenthesis. It was empirically
+found that all sentences (or parts thereof) that contained relevant information
+included at least one of these two elements. Since parentheses come in paris,
+only the open parenthesis was included.
+'''
+
+digit_or_paren = re.compile("\d|\(")
+
+
+'''
+Function used to ensure that regex special characters are properly escaped
+before they are used in regular expressions. It is necessary to detect chemical
+elements - during the search for constituent amounts - that include parentheses
+and/or brackets in their name. This might have to be expanded accordingly if
+additional special characters (e.g. "+") find their way into the elements.
+'''
+
+def string_to_regex(element):
+    lparen = element.replace("(", "\(")
+    rparen = lparen.replace(")","\)")
+    lbracket = rparen.replace("[","\[")
+    rbracket = lbracket.replace("]","\]")
+    return rbracket
+
+'''
+Function used to detect constituents and their quantities. Its parameters
+include a regex search result which corresponds to one half of the "addition"
+sentence and a string which only helps with formatting. If the search has found
+nothing, the constituent parameter is consdered missing and the function exits.
+Otherwise, the string-result is extracted and a further check is performed: if
+the string contains no digits/parentheses then it is considered to have no
+constituents and the function exits. Otherwise, chemdataextractor is used to
+retrieve the potential constituents. If the package finds nothing, once again
+we print "missing" and move on. Otherwise, a loop iterates through the
+dictionary of elements/compounds and then proceeds to search for any text that
+is in parentheses directly following said element/compound. If it finds any,
+that is considered to be its quantity and it precedes the substance itself. If
+not, then the quantity parameter is considered to be missing, but the element/
+compound is stored.
+'''
+
+def const_and_quantity(part, side):
+    print("Constituent(s) " + side + ":")
+    
+    if not part:
+        print("missing")
+    else:
+        part_string = part.group(0)
+        
+        if not digit_or_paren.search(part_string):
+            print("missing")
+        else:
+            #Capturing and ordering the chemical compounds.
+            coll = Document(part_string).records.serialize()
+            
+            if not coll:
+                print("missing")
+            else:
+                for dic in coll:
+                    #Retrieves the first compound in order.
+                    elem = dic['names'][0]
+                    
+                    #This regex matches any text in parentheses that directly
+                    #follows a retrieved compound, allowing for whitespace
+                    #between the two.
+                    elem_re = re.compile("(?<=" + string_to_regex(elem) +
+                                           ")\s*\(.+?\)")
+                    
+                    #This block deals exclusively with constituent quantity.
+                    quant = elem_re.search(part_string)
+                    if not quant:
+                        print("missing", end = " ")
+                    else:
+                        print(quant.group(0).strip("( )"), end = " ")
+                    
+                    print(elem)
+
 
 #Opening the file with the experiments, assuming it's in the same directory.
 try:
@@ -30,8 +131,10 @@ try:
 except IOError:
     print("The file couldn't be read.")
 
-#Counter which helps keep track of the additions.
+
+#Counter which helps keep track of the additions in the following loop.
 experiment_count = 0
+
 
 '''
 Loop where the detection occurs. The outer loop parses the file line by line,
@@ -58,14 +161,24 @@ for line in file_lines:
     addition_count = 0
     
     while True:
-        #Necessary condition to prevent the index from going out of bounds.
+        
+        #This block ensures that the string always ends in whitespace so that
+        #sentence matching can occur successfully. The first condition is
+        #necessary to prevent the index from going out of bounds.
         if line:
             if line[-1] != "\n":
                 line += "\n"
         
-        #Mathes the longest possible string before ". " or ".\n".
+        #Mathes the longest possible string up to ". " or ".\n".
         sentence = non_full_stop.match(line)
-        if sentence:
+        
+        #If the line has been completely parsed or there is no "add", we exit.
+        if not sentence:
+            #Print formatting.
+            print()
+            break
+        
+        else:
             #Reduces number of calls of .group() while cleaning up code a bit.
             sentence_string = sentence.group(1)
             
@@ -79,25 +192,25 @@ for line in file_lines:
                 print("Addition #" + str(experiment_count) +
                       "." + str(addition_count))
                 
-                #Searches for addition traits.
+                #Searches for and outputs addition type.
                 portion_sentence = portion.search(sentence_string)
                 flow_sentence = flow.search(sentence_string)
                 
-                #Addition type.
                 if portion_sentence:
                     print("Type: in portions")
-                elif flow_sentence:
+                if flow_sentence:
                     print("Type: continuous")
-                else:
+                if not portion_sentence and not flow_sentence:
                     print("Type: missing")
                 
-                print(sentence_string.strip() + "\n")
+                #Calls a function to check for constituents and their
+                #quantities in both parts of the sentence, i.e. the one before
+                #the "add" and the one after, and then groups them accordingly.
+                
+                const_and_quantity(lookahead.match(sentence_string), "1")
+                const_and_quantity(lookbehind.search(sentence_string), "2")
+                
+                print()
             
             #Groups the rest of the string and passes it to the next iteration.
             line = sentence.group("the_rest")
-        
-        #If the line has been completely parsed or there is no "add", we exit.
-        else:
-            #Print formatting.
-            print()
-            break
