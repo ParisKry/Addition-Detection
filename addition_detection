@@ -2,12 +2,13 @@
 Overview: this code goes through each one of the file's lines and separates
 them into sentences for easier handling. It then looks for addition in the
 sentences individually: if it detects the string "add", it subsequently
-registers an addition and goes on to detect its parameters.
+registers an addition and goes on to detect its parameters. The output is
+twofold: all additions are represented as JSON strings both on the console and
+in a file this program creates called "add_output.json".
 '''
 
 from chemdataextractor import Document
-
-#Import necessary for using regular expressions in Python.
+import json
 import re
 
 '''
@@ -30,6 +31,9 @@ Other words that could potentially be helpful to identify addition type in the
 file were "dropwise" and "syringe", but they weren't implemented both because I
 am not confident in how/if they relate and because the solution isn't supposed
 to be all-encompassing.
+In a similar vein, different forms of "add" were all treated the same: a bigger
+sample size would help with identifying different patterns around "added" vs
+"addition". The false positive of "additional" was noticed but not corrected.
 '''
 
 add = re.compile("[aA]dd")
@@ -57,6 +61,52 @@ digit_or_paren = re.compile("\d|\(")
 
 
 '''
+Creation of a class used for storing the addition information in a format which
+can be quickly turned into a JSON formatted string.
+
+"text" refers to the experiment in which the addition was detected.
+
+"enumeration" is a property which stores a value in the "X.Y" format, where "X"
+is the experiment number and "Y" is a counter which increases for every
+addition found in experiment "X". It was not asked for, but it is very easy to
+remove since it's only mentioned here and in "add_object.enumeration = num".
+
+"add_type" stores the type of addition detected.
+
+"const1" and "const2" are where the constituents (and their quantities, if any)
+can be found. The only difference between the two properties is that the former
+refers to strings found before "add" in a sentence while the latter concerns
+the strings found after "add". As a result, it's not always as simple as having
+a singular compound on either property to signal addition; sometimes multiple
+constituents are found on either or both sides, or at least one of the two
+parameters is entirely missing. In this last case, it can be often assumed that
+the addition is comprised of the non-missing constituent along with a compound
+or substance mentioned in or stemming from a previous addition in the
+experiment.
+'''
+
+class Addition:
+    text = ""
+    enumeration = ""
+    add_type = ""
+    const1 = ""
+    const2 = ""
+
+
+'''
+Function which updates the two constituent parameters of the Addition objects.
+"side" refers to the side of the string (i.e. before or after "add") and thus
+controls which parameter is updated, while "obj" is the Addition object being
+updated and "entry" is the text that is being concatenated.
+'''
+
+def update_const(side, obj, entry):
+    if side == "1":
+        obj.const1 += entry
+    else:
+        obj.const2 += entry
+
+'''
 Function used to ensure that regex special characters are properly escaped
 before they are used in regular expressions. It is necessary to detect chemical
 elements - during the search for constituent amounts - that include parentheses
@@ -73,39 +123,41 @@ def string_to_regex(element):
 
 '''
 Function used to detect constituents and their quantities. Its parameters
-include a regex search result which corresponds to one half of the "addition"
+include a regex search result which corresponds to one part of the "addition"
 sentence and a string which only helps with formatting. If the search has found
 nothing, the constituent parameter is consdered missing and the function exits.
 Otherwise, the string-result is extracted and a further check is performed: if
 the string contains no digits/parentheses then it is considered to have no
 constituents and the function exits. Otherwise, chemdataextractor is used to
 retrieve the potential constituents. If the package finds nothing, once again
-we print "missing" and move on. Otherwise, a loop iterates through the
+we store "missing" and move on. Otherwise, a loop iterates through the
 dictionary of elements/compounds and then proceeds to search for any text that
 is in parentheses directly following said element/compound. If it finds any,
 that is considered to be its quantity and it precedes the substance itself. If
 not, then the quantity parameter is considered to be missing, but the element/
-compound is stored.
+compound itself is stored. If there are multiple compounds on the same side of
+the "add" then the loop repeats after adding the separator "|||" to ensure that
+the constituents and their quantities don't get mixed up.
 '''
 
-def const_and_quantity(part, side):
-    print("Constituent(s) " + side + ":")
-    
+def const_and_quantity(part, side, obj):
     if not part:
-        print("missing")
+        update_const(side, obj, "quant: missing -- comp: missing")
     else:
         part_string = part.group(0)
         
         if not digit_or_paren.search(part_string):
-            print("missing")
+            update_const(side, obj, "quant: missing -- comp: missing")
+        
         else:
             #Capturing and ordering the chemical compounds.
-            coll = Document(part_string).records.serialize()
+            collection = Document(part_string).records.serialize()
             
-            if not coll:
-                print("missing")
+            if not collection:
+                update_const(side, obj, "quant: missing -- comp: missing")
+            
             else:
-                for dic in coll:
+                for dic in collection:
                     #Retrieves the first compound in order.
                     elem = dic['names'][0]
                     
@@ -118,11 +170,16 @@ def const_and_quantity(part, side):
                     #This block deals exclusively with constituent quantity.
                     quant = elem_re.search(part_string)
                     if not quant:
-                        print("missing", end = " ")
+                        update_const(side, obj, "quant: missing -- ")
                     else:
-                        print(quant.group(0).strip("( )"), end = " ")
+                        update_const(side, obj, "quant: " +
+                                     quant.group(0).strip("( )") + " -- ")
                     
-                    print(elem)
+                    update_const(side, obj, "comp: " + elem)
+                    
+                    #Separator in case there are multiple compounds found.
+                    if dic != collection[-1]:
+                        update_const(side, obj, " ||| ")
 
 
 #Opening the file with the experiments, assuming it's in the same directory.
@@ -134,6 +191,9 @@ except IOError:
 
 #Counter which helps keep track of the additions in the following loop.
 experiment_count = 0
+
+#Array which stores all JSON strings created in the following loop.
+j_array = []
 
 
 '''
@@ -151,14 +211,18 @@ searched for sequentially.
 '''
 
 for line in file_lines:
-    #Print formatting, the condition ignores the file's blank lines.
+    
+    #This condition ignores the file's blank lines.
     if line != "\n":
-        print(line + "\n")
         #Counter for formatting purposes, follows experiment number.
         experiment_count += 1
     
     #Resets this counter for each experiment.
     addition_count = 0
+    
+    #Used here so that the text that goes into the "text" parameter is the same
+    #as the original and not affected by alterations caused by the code.
+    line_original = line.strip("\n")
     
     while True:
         
@@ -174,43 +238,71 @@ for line in file_lines:
         
         #If the line has been completely parsed or there is no "add", we exit.
         if not sentence:
-            #Print formatting.
-            print()
             break
         
         else:
             #Reduces number of calls of .group() while cleaning up code a bit.
             sentence_string = sentence.group(1)
             
-            #Searches for the string "add" in the sentece.
+            #Groups the rest of the string so that it may be passed to the next
+            #iteration.
+            line = sentence.group("the_rest")
+            
+            #Searches for the string "add" in the sentece. If it isn't found,
+            #we go back to the beginning of this loop.
             addition_sentence = add.search(sentence_string)
             if addition_sentence:
+                
                 #Counter for formatting purposes.
                 addition_count += 1
                 
-                #Addition header.
-                print("Addition #" + str(experiment_count) +
-                      "." + str(addition_count))
+                #Initialises an Addition object in preparation for data
+                #storing. "text" is immediately stored.
+                add_object = Addition()
+                add_object.text = line_original
+                
+                #Concatenation and storage of the two counters.
+                num = str(experiment_count) + "." + str(addition_count)
+                add_object.enumeration = num
                 
                 #Searches for and outputs addition type.
                 portion_sentence = portion.search(sentence_string)
                 flow_sentence = flow.search(sentence_string)
                 
                 if portion_sentence:
-                    print("Type: in portions")
+                    type_string = "in portions"
                 if flow_sentence:
-                    print("Type: continuous")
+                    type_string = "continuous"
                 if not portion_sentence and not flow_sentence:
-                    print("Type: missing")
+                    type_string = "missing"
+                
+                add_object.add_type = type_string
                 
                 #Calls a function to check for constituents and their
                 #quantities in both parts of the sentence, i.e. the one before
                 #the "add" and the one after, and then groups them accordingly.
+                #It is important that the second call has "search" instead of
+                #"match" due to the positioning of the corresponding text.
                 
-                const_and_quantity(lookahead.match(sentence_string), "1")
-                const_and_quantity(lookbehind.search(sentence_string), "2")
+                const_and_quantity(lookahead.match(sentence_string), "1",
+                                   add_object)
+                const_and_quantity(lookbehind.search(sentence_string), "2",
+                                   add_object)
                 
-                print()
-            
-            #Groups the rest of the string and passes it to the next iteration.
-            line = sentence.group("the_rest")
+                #Converts the Addition object to a JSON string and stores it in
+                #an array.
+                json_str = json.dumps(add_object.__dict__,
+                                      ensure_ascii = False, indent = 4)
+                j_array.append(json_str)
+
+#Closes the input file.
+file_lines.close()
+
+#The string is both written in a file and printed to the console as output of
+#this code. The file is also available separately in this repo.
+
+with open("add_output.json", "w", encoding = 'UTF-8') as write_file:
+    json.dump(j_array, write_file, ensure_ascii = False)
+
+for j in j_array:
+    print(j + "\n")
