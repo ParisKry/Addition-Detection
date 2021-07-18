@@ -1,0 +1,122 @@
+#Migrated code from the main file.
+
+import unittest
+from chemdataextractor import Document
+import re
+
+digit_or_paren = re.compile("\d|\(")
+
+class Addition:
+    text = ""
+    enumeration = ""
+    add_type = ""
+    const1 = ""
+    const2 = ""
+
+def update_const(side, obj, entry):
+    if side == "1":
+        obj.const1 += entry
+    else:
+        obj.const2 += entry
+
+def string_to_regex(element):
+    lparen = element.replace("(", "\(")
+    rparen = lparen.replace(")","\)")
+    lbracket = rparen.replace("[","\[")
+    rbracket = lbracket.replace("]","\]")
+    return rbracket
+
+def const_and_quantity(part, side, obj):
+    if not part:
+        update_const(side, obj, "quant: missing -- comp: missing")
+    else:
+        part_string = part.group(0)
+        
+        if not digit_or_paren.search(part_string):
+            update_const(side, obj, "quant: missing -- comp: missing")
+        
+        else:
+            #Capturing and ordering the chemical compounds.
+            collection = Document(part_string).records.serialize()
+            
+            if not collection:
+                update_const(side, obj, "quant: missing -- comp: missing")
+            
+            else:
+                for dic in collection:
+                    #Retrieves the first compound in order.
+                    elem = dic['names'][0]
+                    
+                    #This regex matches any text in parentheses that directly
+                    #follows a retrieved compound, allowing for whitespace
+                    #between the two.
+                    elem_re = re.compile("(?<=" + string_to_regex(elem) +
+                                           ")\s*\(.+?\)")
+                    
+                    #This block deals exclusively with constituent quantity.
+                    quant = elem_re.search(part_string)
+                    if not quant:
+                        update_const(side, obj, "quant: missing -- ")
+                    else:
+                        update_const(side, obj, "quant: " +
+                                     quant.group(0).strip("( )") + " -- ")
+                    
+                    update_const(side, obj, "comp: " + elem)
+                    
+                    #Separator in case there are multiple compounds found.
+                    if dic != collection[-1]:
+                        update_const(side, obj, " ||| ")
+
+#Object creation.
+test_obj = Addition()
+
+#The first assertion fails as explained in the comments underneath, the second
+#doesn't run at all.
+class TestChem(unittest.TestCase):
+    def test_fun(self):
+        self.assertCountEqual(string_to_regex("\[]\)("), "\\[\]\\)\(")
+        self.assertCountEqual(update_const("lasers", test_obj, "a"), "a")
+
+unittest.main(argv=[''], exit = False)
+
+'''
+The first assertion helped identify a potential future problem with the
+string_to_regex function: if a compound contains a backslash immediately before
+a parenthesis or bracket, then the backslash added by the function would
+inadvertently be escaped by the already existing one, thus no longer escaping
+the parenthesis or bracket.
+Unfortunately, not many more automatic tests were run for two reasons: the
+functions don't return anything - and even if they did it was found hard to
+properly assert said return - and the main loop of the program is not called by
+a function itself; it's simply run. However, a lot of observations were made
+via manual exploration, some of which are already referenced in the original
+file. This section concerns the ones that aren't.
+
+Abbreviations such as "r.t" are problematic for sentence detection because they
+look like full stops, given this code's definition (i.e. period followed by
+whitespace). One potential workaround would be to make it so that periods that
+follow the pattern of "period + whitespace + lowercase character" are ignored,
+however that could be problematic in the cases of end of line and end of file.
+
+What if a sentence contains more than one "add"? At the moment, the code does
+not accommodate for such situations. The expected behavior is for it to only
+work for the first instance it finds and ignore the other one. Properly
+identifying multiple additions in the same sentence would definitely require a
+restructure of my approach.
+
+Not so much of a test, but words such as "in [element/substance]", "[added] to"
+and "of [compound/substance]" were found to hold very useful information when
+it came to constituent detection. However, they were eschewed in favor of
+chemdataextractor's feature.
+
+One simple addition to the code could revolve around "cancelling" the
+registering of an addition where all of its elements are missing. This could
+be in the form of improving addition detection ("add[ed]" vs "addition" vs
+"additional"), refraining from saving objects where all values are "missing",
+or both.
+
+Finally the current code arbitrarily favors "continuous" over "in portions"
+in the edge case where both corrresponding words appear in a sentence. Once
+again, this part of the detection is quite weak given the small sample size
+specifically around this addition trait.
+'''
